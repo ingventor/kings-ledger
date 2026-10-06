@@ -183,7 +183,8 @@ def main():
     source = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     from render_ledger import ART
     artwork = b"".join((ROOT / "assets" / name).read_bytes() for name in sorted(set(ART.values())))
-    digest = hashlib.sha256(source + (ROOT / "work" / "render_ledger.py").read_bytes() + artwork).hexdigest()
+    renderer = (ROOT / "work" / "render_ledger.py").read_bytes() + (ROOT / "work" / "render_month.py").read_bytes()
+    digest = hashlib.sha256(source + renderer + artwork).hexdigest()
     saved = state_dir / "last-upload.json"
     if args.upload_test:
         if os.environ.get("LEDGER_TEST_APPROVED") != "yes":
@@ -197,7 +198,7 @@ def main():
                 print("No calendar changes; upload skipped")
                 return
     else:
-        name = "K-Ings-Ledger-Months-Oct-2026-Dec-2027.pdf"
+        name = "K-Ings-Ledger.pdf"
     with tempfile.TemporaryDirectory(prefix="ledger-refresh-") as directory:
         pdf = Path(directory) / name
         render(data, pdf)

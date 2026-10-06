@@ -21,7 +21,8 @@ page-count patch. A successful upload is downloaded and its page map verified
 before its source digest is marked complete. If authentication expires,
 re-pairing is required; no paid plan or Azure subscription is involved.
 
-The current document includes October 2026 through December 2027. The
+The document keeps a rolling 15-month window, beginning October 2026 now and
+advancing by one month at each month boundary. The
 separate Ledger is an output surface, not an editable calendar: make changes
 in the personal Outlook calendars (or through Scheduler if Scheduler writes
 there). Events are never read back from the PDF.

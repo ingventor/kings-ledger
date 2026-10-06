@@ -4,8 +4,9 @@ import calendar
 import json
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from reportlab import rl_config
 from reportlab.lib.colors import HexColor
@@ -18,7 +19,17 @@ from render_month import H, W, by_day, parse_utc
 
 
 ROOT = Path(__file__).resolve().parent.parent
-MONTHS = [(2026, month) for month in range(10, 13)] + [(2027, month) for month in range(1, 13)]
+def rolling_months():
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    first = max(date(2026, 10, 1), today.replace(day=1))
+    months = []
+    for offset in range(15):
+        absolute = first.year * 12 + first.month - 1 + offset
+        months.append((absolute // 12, absolute % 12 + 1))
+    return months
+
+
+MONTHS = rolling_months()
 MONTH_KEYS = [f"{year}-{month:02d}" for year, month in MONTHS]
 PAPER = HexColor("#FBF8F2")
 INK = HexColor("#282B30")
