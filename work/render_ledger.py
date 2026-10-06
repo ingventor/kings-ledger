@@ -343,7 +343,12 @@ def render(data, output):
     if set(data) != set(MONTH_KEYS):
         raise ValueError("Expected all 15 months of source data")
     c = canvas.Canvas(str(output), pagesize=(W, H))
-    c.setTitle("K. Ing's Ledger | October 2026 - December 2027")
+    first_year, first_month = MONTHS[0]
+    last_year, last_month = MONTHS[-1]
+    c.setTitle(
+        f"K. Ing's Ledger | {calendar.month_name[first_month]} {first_year} - "
+        f"{calendar.month_name[last_month]} {last_year}"
+    )
     days_by_month = {(year, month): by_day(data[f"{year}-{month:02d}"], year, month) for year, month in MONTHS}
     for year, month in MONTHS:
         month_page(c, year, month, days_by_month[(year, month)])
