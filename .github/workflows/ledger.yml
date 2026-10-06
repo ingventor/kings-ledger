@@ -1,0 +1,73 @@
+name: Refresh K. Ing's Ledger
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kings-ledger-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.0'
+      - name: Install deterministic renderer
+        run: python -m pip install --disable-pip-version-check -r work/requirements.txt
+      - name: Build page-aware reMarkable updater
+        run: |
+          git clone --quiet --depth 1 --branch v0.0.35 https://github.com/juruen/rmapi.git "$RUNNER_TEMP/rmapi-source"
+          test "$(git -C "$RUNNER_TEMP/rmapi-source" rev-parse HEAD)" = '74a8e2ec7f324655ef3a3890936ed78e6e13ee51'
+          git -C "$RUNNER_TEMP/rmapi-source" apply --check "$GITHUB_WORKSPACE/work/rmapi-pagecount.patch"
+          git -C "$RUNNER_TEMP/rmapi-source" apply "$GITHUB_WORKSPACE/work/rmapi-pagecount.patch"
+          cd "$RUNNER_TEMP/rmapi-source"
+          go test ./api/sync15 ./archive
+          go build -o "$RUNNER_TEMP/rmapi" .
+      - name: Restore private sign-ins
+        id: restore
+        env:
+          LEDGER_STATE_KEY: ${{ secrets.LEDGER_STATE_KEY }}
+        run: python work/state_vault.py open --state-dir "$RUNNER_TEMP/ledger-state" --vault private-state.enc
+      - name: Refresh separate Ledger document
+        env:
+          LEDGER_OUTLOOK_ACCOUNT: ${{ secrets.LEDGER_OUTLOOK_ACCOUNT }}
+          LEDGER_TEST_DOCUMENT_NAME: ${{ secrets.LEDGER_TEST_DOCUMENT_NAME }}
+          LEDGER_TEST_DOCUMENT_ID: ${{ secrets.LEDGER_TEST_DOCUMENT_ID }}
+          LEDGER_PROTECTED_DOCUMENT_ID: ${{ secrets.LEDGER_PROTECTED_DOCUMENT_ID }}
+          LEDGER_TEST_APPROVED: 'yes'
+          LEDGER_RMAPI_BIN: ${{ runner.temp }}/rmapi
+          RMAPI_CONFIG: ${{ runner.temp }}/ledger-state/rmapi-config
+        run: |
+          if python work/ledger_worker.py --state-dir "$RUNNER_TEMP/ledger-state" --upload-test >"$RUNNER_TEMP/ledger-refresh.log" 2>&1; then
+            echo 'Ledger checked successfully. Only a changed Outlook snapshot triggers an upload.'
+          else
+            echo 'Ledger refresh failed. Calendar details and sign-in diagnostics were suppressed from this public log.' >&2
+            exit 1
+          fi
+      - name: Preserve encrypted sign-ins and update state
+        if: always() && steps.restore.outcome == 'success'
+        env:
+          LEDGER_STATE_KEY: ${{ secrets.LEDGER_STATE_KEY }}
+        run: |
+          python work/state_vault.py seal --state-dir "$RUNNER_TEMP/ledger-state" --vault private-state.enc
+          git config user.name 'K. Ing Ledger Worker'
+          git config user.email 'actions@users.noreply.github.com'
+          git add private-state.enc
+          if ! git diff --cached --quiet; then
+            git commit -m 'Refresh encrypted Ledger state'
+            git push
+          fi

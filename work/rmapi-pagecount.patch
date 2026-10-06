@@ -1,0 +1,181 @@
+diff --git a/api/sync15/apictx.go b/api/sync15/apictx.go
+index a8e5333..e256311 100644
+--- a/api/sync15/apictx.go
++++ b/api/sync15/apictx.go
+@@ -2,7 +2,10 @@ package sync15
+ 
+ import (
+ 	"archive/zip"
++	"bytes"
++	"crypto/sha256"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -18,6 +21,7 @@ import (
+ 	"github.com/juruen/rmapi/model"
+ 	"github.com/juruen/rmapi/transport"
+ 	"github.com/juruen/rmapi/util"
++	pdf "github.com/unidoc/unipdf/v3/model"
+ )
+ 
+ // An ApiCtx allows you interact with the remote reMarkable API
+@@ -410,11 +414,106 @@ func (ctx *ApiCtx) UploadDocument(parentId string, sourceDocPath string, notify
+ 	return doc.ToDocument(), nil
+ }
+ 
+-// ReplaceDocumentFile replaces the main document file (e.g. PDF) of an existing document
+-// identified by docId with the local file given by sourceDocPath. Metadata and annotations
+-// remain untouched.
++// ledgerPageCount updates the page map when replacing a PDF of a different length.
++// It deliberately refuses unfamiliar content schemas instead of risking a partial map.
++func ledgerPageCount(contentBytes []byte, count int) ([]byte, error) {
++	var content map[string]interface{}
++	if err := json.Unmarshal(contentBytes, &content); err != nil {
++		return nil, err
++	}
++	oldFloat, ok := content["pageCount"].(float64)
++	if !ok || oldFloat < 1 {
++		return nil, fmt.Errorf("missing old page count")
++	}
++	old := int(oldFloat)
++	if float64(old) != oldFloat {
++		return nil, fmt.Errorf("invalid old page count")
++	}
++	cp, ok := content["cPages"].(map[string]interface{})
++	if !ok {
++		return nil, fmt.Errorf("missing cPages")
++	}
++	pages, ok := cp["pages"].([]interface{})
++	if !ok || len(pages) != old {
++		return nil, fmt.Errorf("cPages length mismatch")
++	}
++	original, ok := cp["original"].(map[string]interface{})
++	if !ok || original["value"] != oldFloat {
++		return nil, fmt.Errorf("cPages original mismatch")
++	}
++	if count < 1 {
++		return nil, fmt.Errorf("new PDF has no pages")
++	}
++	if count > old {
++		last, ok := pages[len(pages)-1].(map[string]interface{})
++		if !ok {
++			return nil, fmt.Errorf("invalid last page")
++		}
++		idx, ok := last["idx"].(map[string]interface{})
++		if !ok {
++			return nil, fmt.Errorf("invalid last page index")
++		}
++		value, ok := idx["value"].(string)
++		if !ok || value == "" {
++			return nil, fmt.Errorf("invalid last page index value")
++		}
++		timestamp, ok := idx["timestamp"].(string)
++		if !ok || timestamp == "" {
++			return nil, fmt.Errorf("invalid last page timestamp")
++		}
++		for i := old; i < count; i++ {
++			value += "a"
++			pages = append(pages, map[string]interface{}{
++				"id":    uuid.New().String(),
++				"idx":   map[string]interface{}{"timestamp": timestamp, "value": value},
++				"redir": map[string]interface{}{"timestamp": timestamp, "value": i},
++			})
++		}
++	} else if count < old {
++		pages = pages[:count]
++		lastOpened, ok := cp["lastOpened"].(map[string]interface{})
++		if ok {
++			found := false
++			for _, page := range pages {
++				if page.(map[string]interface{})["id"] == lastOpened["value"] {
++					found = true
++					break
++				}
++			}
++			if !found {
++				lastOpened["value"] = pages[0].(map[string]interface{})["id"]
++			}
++		}
++	}
++	cp["pages"] = pages
++	original["value"] = count
++	content["pageCount"] = count
++	content["originalPageCount"] = count
++	return json.Marshal(content)
++}
++
++// ReplaceDocumentFile replaces the PDF and updates its page map while keeping
++// the document ID and existing page identities. The caller must restrict this
++// to a disposable, unannotated PDF when the page count can change.
+ func (ctx *ApiCtx) ReplaceDocumentFile(docId, sourceDocPath string, notify bool) error {
+ 	_, ext := util.DocPathToName(sourceDocPath)
++	if ext != "pdf" {
++		return fmt.Errorf("page-aware replacement requires PDF")
++	}
++	pageFile, err := os.Open(sourceDocPath)
++	if err != nil {
++		return err
++	}
++	reader, err := pdf.NewPdfReader(pageFile)
++	if err != nil {
++		pageFile.Close()
++		return err
++	}
++	pageCount, err := reader.GetNumPages()
++	pageFile.Close()
++	if err != nil {
++		return err
++	}
+ 	return Sync(ctx.blobStorage, ctx.hashTree, func(t *HashTree) error {
+ 		doc, err := t.FindDoc(docId)
+ 		if err != nil {
+@@ -422,14 +521,30 @@ func (ctx *ApiCtx) ReplaceDocumentFile(docId, sourceDocPath string, notify bool)
+ 		}
+ 
+ 		var fileEntry *Entry
++		var contentEntry *Entry
+ 		for _, f := range doc.Files {
+ 			if strings.HasSuffix(f.DocumentID, "."+ext) {
+ 				fileEntry = f
+-				break
++			}
++			if strings.HasSuffix(f.DocumentID, ".content") {
++				contentEntry = f
+ 			}
+ 		}
+-		if fileEntry == nil {
+-			return fmt.Errorf("document does not contain .%s", ext)
++		if fileEntry == nil || contentEntry == nil {
++			return fmt.Errorf("document does not contain PDF and content entries")
++		}
++		contentReader, err := ctx.blobStorage.GetReader(contentEntry.Hash, contentEntry.DocumentID)
++		if err != nil {
++			return err
++		}
++		contentBytes, err := io.ReadAll(contentReader)
++		contentReader.Close()
++		if err != nil {
++			return err
++		}
++		newContent, err := ledgerPageCount(contentBytes, pageCount)
++		if err != nil {
++			return err
+ 		}
+ 
+ 		hash, size, err := FileHashAndSize(sourceDocPath)
+@@ -450,6 +565,13 @@ func (ctx *ApiCtx) ReplaceDocumentFile(docId, sourceDocPath string, notify bool)
+ 
+ 		fileEntry.Hash = hashStr
+ 		fileEntry.Size = size
++		contentHash := sha256.Sum256(newContent)
++		contentHashStr := hex.EncodeToString(contentHash[:])
++		if err := ctx.blobStorage.UploadBlob(contentHashStr, contentEntry.DocumentID, bytes.NewReader(newContent)); err != nil {
++			return err
++		}
++		contentEntry.Hash = contentHashStr
++		contentEntry.Size = int64(len(newContent))
+ 
+ 		if err := doc.Rehash(); err != nil {
+ 			return err
