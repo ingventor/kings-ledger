@@ -2,7 +2,7 @@ name: Refresh K. Ing's Ledger
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
