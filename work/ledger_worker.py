@@ -165,11 +165,11 @@ def verify_uploaded_pages(document_id, expected_pages):
             raise RuntimeError("Cloud document page counts disagree with the new PDF")
 
 
-def upload_due(prior, digest, document_id, cloud_modified, now):
+def upload_due(prior, digest, document_id, now):
     if prior.get("source_sha256") != digest or prior.get("document_id") != document_id:
         return True
-    # Older state has no upload timestamp; use the existing cloud document date once.
-    last_upload = prior.get("uploaded_at") or cloud_modified
+    # Legacy state gets one verified upload to establish the 28-day clock.
+    last_upload = prior.get("uploaded_at")
     if not isinstance(last_upload, str):
         return True
     try:
@@ -210,9 +210,9 @@ def main():
             raise RuntimeError("Ledger upload is locked until the separate document is explicitly approved")
         name = os.environ["LEDGER_TEST_DOCUMENT_NAME"]
         document_id = os.environ["LEDGER_TEST_DOCUMENT_ID"]
-        target = confirmed_test_target(name, document_id)
+        confirmed_test_target(name, document_id)
         prior = json.loads(saved.read_text()) if saved.exists() else {}
-        if not upload_due(prior, digest, document_id, target.get("modifiedClient"), datetime.now(timezone.utc)):
+        if not upload_due(prior, digest, document_id, datetime.now(timezone.utc)):
             print("No calendar changes; 28-day refresh not due")
             return
     else:
