@@ -1,8 +1,10 @@
 # K. Ing's Ledger
 
 One-way, deterministic personal Outlook calendar to separate reMarkable PDF.
-The scheduled job checks hourly. A change triggers a new month-view PDF and
-replaces only the explicitly named Ledger document after checking its ID.
+The scheduled job checks hourly. A change or 28 days without an upload triggers
+a new month-view PDF and replaces only the explicitly named Ledger document
+after checking its ID. GitHub may delay scheduled runs, so the refresh is not
+guaranteed at an exact hour.
 The original handwritten `2026 Cal.pdf` is excluded by ID in code.
 
 This is not a website and does not use AI at runtime. Standard GitHub-hosted

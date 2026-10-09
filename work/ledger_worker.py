@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -30,6 +30,7 @@ from graph_auth import access_token
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 NEW_YORK = ZoneInfo("America/New_York")
+REFRESH_AFTER = timedelta(days=28)
 
 
 def rmapi_binary():
@@ -164,6 +165,24 @@ def verify_uploaded_pages(document_id, expected_pages):
             raise RuntimeError("Cloud document page counts disagree with the new PDF")
 
 
+def upload_due(prior, digest, document_id, cloud_modified, now):
+    if prior.get("source_sha256") != digest or prior.get("document_id") != document_id:
+        return True
+    # Older state has no upload timestamp; use the existing cloud document date once.
+    last_upload = prior.get("uploaded_at") or cloud_modified
+    if not isinstance(last_upload, str):
+        return True
+    try:
+        last_upload_time = datetime.fromisoformat(last_upload.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if last_upload_time.tzinfo is None:
+        return True
+    if last_upload_time > now:
+        return True
+    return now - last_upload_time >= REFRESH_AFTER
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, help="Use a local source snapshot instead of Outlook")
@@ -191,12 +210,11 @@ def main():
             raise RuntimeError("Ledger upload is locked until the separate document is explicitly approved")
         name = os.environ["LEDGER_TEST_DOCUMENT_NAME"]
         document_id = os.environ["LEDGER_TEST_DOCUMENT_ID"]
-        confirmed_test_target(name, document_id)
-        if saved.exists():
-            prior = json.loads(saved.read_text())
-            if prior.get("source_sha256") == digest and prior.get("document_id") == document_id:
-                print("No calendar changes; upload skipped")
-                return
+        target = confirmed_test_target(name, document_id)
+        prior = json.loads(saved.read_text()) if saved.exists() else {}
+        if not upload_due(prior, digest, document_id, target.get("modifiedClient"), datetime.now(timezone.utc)):
+            print("No calendar changes; 28-day refresh not due")
+            return
     else:
         name = "K-Ings-Ledger.pdf"
     with tempfile.TemporaryDirectory(prefix="ledger-refresh-") as directory:
@@ -207,7 +225,11 @@ def main():
             subprocess.run([rmapi_binary(), "put", "--content-only", str(pdf)], check=True, timeout=300)
             confirmed_test_target(name, document_id)
             verify_uploaded_pages(document_id, expected_pages)
-            save_private_json(saved, {"source_sha256": digest, "document_id": document_id})
+            save_private_json(saved, {
+                "source_sha256": digest,
+                "document_id": document_id,
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            })
             print("Separate Ledger document updated; confirm its pages on Paper Pro")
         else:
             destination = state_dir / name

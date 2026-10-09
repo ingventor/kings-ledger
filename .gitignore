@@ -21,3 +21,4 @@
 !/work/requirements.txt
 !/work/rmapi-pagecount.patch
 !/work/state_vault.py
+!/work/test_ledger_worker.py
